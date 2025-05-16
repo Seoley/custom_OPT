@@ -34,9 +34,8 @@ class OPTAttention(nn.Module):
         q = self.q_proj(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        # print(f"self.layer_idx in attention: {self.layer_idx}")
+
         if past_key_values is not None:
-            # save all key/value_states to cache to be re-used for fast auto-regressive generation
             k, v = past_key_values.update(
                 k, v, self.layer_idx, {"cache_position": cache_position}
             )
@@ -44,12 +43,7 @@ class OPTAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
 
         causal_mask = attention_mask
-        # if attention_mask is not None:
-        #     causal_mask = causal_mask[:, :, :, : k.shape[-2]]
-
-        # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
-        # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
-        
+     
         is_causal = True if causal_mask is None and T > 1 else False
 
         dropout = 0
@@ -61,7 +55,7 @@ class OPTAttention(nn.Module):
             k,
             v,
             attn_mask=attention_mask,
-            dropout_p=0,
+            dropout_p=dropout,
             is_causal=is_causal,
         )
 
@@ -76,12 +70,17 @@ class OPTDecoderLayer(nn.Module):
         super().__init__()
         self.self_attn = OPTAttention(hidden_dim, n_heads,layer_idx=layer_idx)
         self.self_attn_layer_norm = nn.LayerNorm(hidden_dim)
+
         self.fc1 = nn.Linear(hidden_dim, ffn_dim)
         self.fc2 = nn.Linear(ffn_dim, hidden_dim)
+        
         self.final_layer_norm = nn.LayerNorm(hidden_dim)
         self.activation_fn = nn.ReLU()
+        
         self.dropout = dropout
+        
         self.do_layer_norm_before = True
+        
         self.layer_idx = layer_idx
 
     def forward(self, x, attention_mask=None, use_cache=False, cache_position=None, past_key_values = None):
@@ -120,7 +119,7 @@ class OPTDecoderLayer(nn.Module):
 
         if use_cache:
             outputs += (present_key_value,)
-        # print(f"outputs in decoder: {outputs}")
+
         return outputs
 
 class CustomOPTModel(nn.Module):
@@ -138,12 +137,6 @@ class CustomOPTModel(nn.Module):
         self.final_layer_norm = nn.LayerNorm(hidden_dim).to(device)
         self.lm_head = nn.Linear(hidden_dim, vocab_size, bias=False).to(device)
         
-    def make_mask(self, input_ids):
-        padding_idx = 1
-        attention_mask = (input_ids != padding_idx).to(dtype=torch.float32, device=input_ids.device)  # [B, T]
-        attention_mask = attention_mask[:, None, None, :]  # [B, 1, 1, T]
-        attention_mask = (1.0 - attention_mask) * -1e9
-        return attention_mask
 
     @staticmethod
     # Copied from transformers.models.llama.modeling_llama.LlamaModel._prepare_4d_causal_attention_mask_with_cache_position
@@ -289,7 +282,6 @@ class CustomOPTModel(nn.Module):
         )
         use_cache = use_cache if use_cache is not None else True
 
-
         
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -352,11 +344,7 @@ class CustomOPTModel(nn.Module):
         hidden_states = self.final_layer_norm(hidden_states)
 
         logits = self.lm_head(hidden_states)
-        # print("=========================================")
-        # print(f"use_cache: {use_cache}")
-        # print(f"past_key_values: {past_key_values}")
-        # print(f"next_past_key_values: {next_past_key_values}")
-        # print(f"logits: {logits}")
+
         if use_cache:
             return logits, next_past_key_values
         else:
